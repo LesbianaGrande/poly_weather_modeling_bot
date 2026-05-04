@@ -1,0 +1,113 @@
+"""
+models/probability.py — Compute temperature threshold probabilities from a sample distribution.
+
+Given a list of temperature samples (the blended ensemble+clim output) and a threshold,
+computes the fraction of samples that exceed (or fall below) the threshold.
+
+Also computes distribution summary stats for logging/debugging.
+"""
+
+import logging
+import math
+from typing import Literal
+
+logger = logging.getLogger(__name__)
+
+
+def compute_probability(
+    samples: list[float],
+    threshold_f: float,
+    kind: Literal["high", "low"],
+) -> float:
+    """
+    Compute the probability that the daily temperature statistic crosses the threshold.
+
+    For 'high' markets:  P(daily_max > threshold)  — YES resolves if high exceeds threshold
+    For 'low' markets:   P(daily_min < threshold)  — YES resolves if low drops below threshold
+
+    Args:
+        samples:      Blended temperature samples (°F)
+        threshold_f:  The market threshold (°F)
+        kind:         'high' or 'low'
+
+    Returns:
+        Probability as a float in [0, 1].
+        Returns 0.5 (maximum uncertainty) if samples is empty.
+    """
+    if not samples:
+        logger.warning(
+            "compute_probability | no samples provided, returning 0.5 (max uncertainty)"
+        )
+        return 0.5
+
+    n = len(samples)
+
+    if kind == "high":
+        # P(daily_max > threshold) — market resolves YES if high exceeds threshold
+        count = sum(1 for s in samples if s > threshold_f)
+    else:
+        # P(daily_min < threshold) — market resolves YES if low drops below threshold
+        count = sum(1 for s in samples if s < threshold_f)
+
+    probability = count / n
+
+    # --- Distribution summary ---
+    sorted_s = sorted(samples)
+    mean = sum(samples) / n
+    variance = sum((s - mean) ** 2 for s in samples) / n
+    std = math.sqrt(variance)
+
+    def percentile(p: float) -> float:
+        idx = p / 100 * (n - 1)
+        lo, hi = int(idx), min(int(idx) + 1, n - 1)
+        frac = idx - lo
+        return sorted_s[lo] * (1 - frac) + sorted_s[hi] * frac
+
+    p10 = percentile(10)
+    p25 = percentile(25)
+    p50 = percentile(50)
+    p75 = percentile(75)
+    p90 = percentile(90)
+
+    logger.info(
+        f"compute_probability | kind={kind} threshold={threshold_f}°F "
+        f"n_samples={n} count_crossing={count} probability={probability:.4f}"
+    )
+    logger.debug(
+        f"  Distribution | mean={mean:.1f}°F std={std:.1f}°F "
+        f"p10={p10:.1f} p25={p25:.1f} p50={p50:.1f} p75={p75:.1f} p90={p90:.1f}"
+    )
+
+    # Sanity clamp
+    probability = max(0.001, min(0.999, probability))
+    return probability
+
+
+def distribution_summary(samples: list[float]) -> dict:
+    """Return a dict of summary statistics for a sample list (for logging/debugging)."""
+    if not samples:
+        return {"n": 0}
+    n = len(samples)
+    mean = sum(samples) / n
+    variance = sum((s - mean) ** 2 for s in samples) / n
+    std = math.sqrt(variance)
+    sorted_s = sorted(samples)
+
+    def pct(p):
+        idx = p / 100 * (n - 1)
+        lo = int(idx)
+        hi = min(lo + 1, n - 1)
+        return sorted_s[lo] * (1 - (idx - lo)) + sorted_s[hi] * (idx - lo)
+
+    return {
+        "n": n,
+        "mean": round(mean, 2),
+        "std": round(std, 2),
+        "min": round(sorted_s[0], 2),
+        "p10": round(pct(10), 2),
+        "p25": round(pct(25), 2),
+        "p50": round(pct(50), 2),
+        "p75": round(pct(75), 2),
+        "p90": round(pct(90), 2),
+        "max": round(sorted_s[-1], 2),
+    }
