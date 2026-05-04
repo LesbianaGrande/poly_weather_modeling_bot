@@ -24,6 +24,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from trading import paper_trader as pt
 from trading.scanner import run_scan, check_resolutions
+from server import start_server
 
 
 def main() -> None:
@@ -34,6 +35,9 @@ def main() -> None:
 
     # Initialise database
     pt.init_db()
+
+    # Start status dashboard (daemon thread, won't block shutdown)
+    start_server()
 
     # Immediate first run
     logger.info("Running initial scan on startup...")
