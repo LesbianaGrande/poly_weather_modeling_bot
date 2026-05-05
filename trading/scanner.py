@@ -89,13 +89,16 @@ def _evaluate_market(mkt: dict) -> str:
 
     Returns: 'opened', 'skipped', or 'passed'
     """
-    market_id = mkt["market_id"]
-    question = mkt["question"]
-    city_raw = mkt["city_raw"]
-    kind = mkt["kind"]
-    threshold_f = mkt["threshold_f"]
-    target_date = mkt["target_date"]
-    yes_price = mkt["yes_price"]
+    market_id    = mkt["market_id"]
+    question     = mkt["question"]
+    city_raw     = mkt["city_raw"]
+    kind         = mkt["kind"]
+    threshold_f  = mkt["threshold_f"]
+    band_type    = mkt.get("band_type", "above")
+    threshold_lo = mkt.get("threshold_lo")
+    threshold_hi = mkt.get("threshold_hi")
+    target_date  = mkt["target_date"]
+    yes_price    = mkt["yes_price"]
 
     logger.info(f"--- Market: '{question[:100]}'")
     logger.debug(
@@ -186,7 +189,12 @@ def _evaluate_market(mkt: dict) -> str:
         )
 
     # --- Probability ---
-    our_prob = compute_probability(blended, threshold_f, kind)
+    our_prob = compute_probability(
+        blended, threshold_f, kind,
+        band_type=band_type,
+        threshold_lo=threshold_lo,
+        threshold_hi=threshold_hi,
+    )
     market_prob = yes_price  # YES price IS the market's implied probability
 
     logger.info(

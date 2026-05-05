@@ -18,40 +18,42 @@ def compute_probability(
     samples: list[float],
     threshold_f: float,
     kind: Literal["high", "low"],
+    band_type: str = "above",
+    threshold_lo: float | None = None,
+    threshold_hi: float | None = None,
 ) -> float:
     """
-    Compute the probability that the daily temperature statistic crosses the threshold.
+    Compute P(YES) for a Polymarket temperature band market.
 
-    For 'high' markets:  P(daily_max > threshold)  — YES resolves if high exceeds threshold
-    For 'low' markets:   P(daily_min < threshold)  — YES resolves if low drops below threshold
+    band_type controls the semantics:
+      "above"   — YES if daily stat > threshold_lo   (e.g. "72°F or higher")
+      "below"   — YES if daily stat <= threshold_hi  (e.g. "33°F or below")
+      "between" — YES if threshold_lo <= stat <= threshold_hi  (e.g. "54-55°F")
 
-    Args:
-        samples:      Blended temperature samples (°F)
-        threshold_f:  The market threshold (°F)
-        kind:         'high' or 'low'
-
-    Returns:
-        Probability as a float in [0, 1].
-        Returns 0.5 (maximum uncertainty) if samples is empty.
+    The 'kind' parameter (high/low) tells us which daily stat the samples represent.
+    Samples are already the correct stat (daily max for high markets, daily min for low).
     """
     if not samples:
-        logger.warning(
-            "compute_probability | no samples provided, returning 0.5 (max uncertainty)"
-        )
+        logger.warning("compute_probability | no samples, returning 0.5")
         return 0.5
 
     n = len(samples)
 
-    if kind == "high":
-        # P(daily_max > threshold) — market resolves YES if high exceeds threshold
-        count = sum(1 for s in samples if s > threshold_f)
-    else:
-        # P(daily_min < threshold) — market resolves YES if low drops below threshold
-        count = sum(1 for s in samples if s < threshold_f)
+    lo = threshold_lo if threshold_lo is not None else threshold_f
+    hi = threshold_hi if threshold_hi is not None else threshold_f
+
+    if band_type == "between":
+        count = sum(1 for s in samples if lo <= s <= hi)
+        desc = f"between {lo}-{hi}°F"
+    elif band_type == "below":
+        count = sum(1 for s in samples if s <= hi)
+        desc = f"<= {hi}°F"
+    else:  # "above" — also the legacy default
+        count = sum(1 for s in samples if s > lo)
+        desc = f"> {lo}°F"
 
     probability = count / n
 
-    # --- Distribution summary ---
     sorted_s = sorted(samples)
     mean = sum(samples) / n
     variance = sum((s - mean) ** 2 for s in samples) / n
@@ -59,28 +61,21 @@ def compute_probability(
 
     def percentile(p: float) -> float:
         idx = p / 100 * (n - 1)
-        lo, hi = int(idx), min(int(idx) + 1, n - 1)
-        frac = idx - lo
-        return sorted_s[lo] * (1 - frac) + sorted_s[hi] * frac
-
-    p10 = percentile(10)
-    p25 = percentile(25)
-    p50 = percentile(50)
-    p75 = percentile(75)
-    p90 = percentile(90)
+        i_lo, i_hi = int(idx), min(int(idx) + 1, n - 1)
+        frac = idx - i_lo
+        return sorted_s[i_lo] * (1 - frac) + sorted_s[i_hi] * frac
 
     logger.info(
-        f"compute_probability | kind={kind} threshold={threshold_f}°F "
-        f"n_samples={n} count_crossing={count} probability={probability:.4f}"
+        f"compute_probability | kind={kind} band={band_type} [{desc}] "
+        f"n={n} count={count} P(YES)={probability:.4f}"
     )
-    logger.debug(
+    logger.info(
         f"  Distribution | mean={mean:.1f}°F std={std:.1f}°F "
-        f"p10={p10:.1f} p25={p25:.1f} p50={p50:.1f} p75={p75:.1f} p90={p90:.1f}"
+        f"p10={percentile(10):.1f} p25={percentile(25):.1f} p50={percentile(50):.1f} "
+        f"p75={percentile(75):.1f} p90={percentile(90):.1f}"
     )
 
-    # Sanity clamp
-    probability = max(0.001, min(0.999, probability))
-    return probability
+    return max(0.001, min(0.999, probability))
 
 
 def distribution_summary(samples: list[float]) -> dict:

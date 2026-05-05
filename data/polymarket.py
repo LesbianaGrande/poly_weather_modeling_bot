@@ -110,11 +110,15 @@ def fetch_temperature_markets() -> list[dict]:
             raw_prices = mkt.get("outcomePrices") or mkt.get("outcome_prices") or mkt.get("prices")
             logger.info(f"  SUB-MARKET id={market_id[:24]} question='{question[:120]}' raw_prices={raw_prices!r}")
 
-            # Extract threshold from the question
-            threshold_f = _extract_threshold(question)
-            if threshold_f is None:
+            # Parse band type + bounds from question
+            band = _parse_market_band(question)
+            if band is None:
                 logger.debug(f"    No temperature threshold found in question, skipping")
                 continue
+            threshold_f  = band["threshold_f"]
+            band_type    = band["band_type"]
+            threshold_lo = band["threshold_lo"]
+            threshold_hi = band["threshold_hi"]
 
             # Extract YES price
             yes_price = _extract_yes_price(mkt)
@@ -128,14 +132,17 @@ def fetch_temperature_markets() -> list[dict]:
                 "city_raw": city_raw,
                 "kind": kind,
                 "threshold_f": threshold_f,
+                "band_type": band_type,
+                "threshold_lo": threshold_lo,
+                "threshold_hi": threshold_hi,
                 "target_date": target_date,
                 "yes_price": yes_price,
                 "no_price": round(1.0 - yes_price, 4),
             }
             logger.info(
-                f"  ACCEPTED: {city_raw} {kind} thr={threshold_f}°F "
-                f"target={target_date} yes_price={yes_price:.4f} "
-                f"question='{question[:80]}'")
+                f"  ACCEPTED {city_raw} {kind} [{band_type}] "
+                f"lo={threshold_lo} hi={threshold_hi} mid={threshold_f}°F "
+                f"target={target_date} yes={yes_price:.4f} q='{question[:80]}'")
             parsed.append(result)
 
     logger.info(f"Polymarket: {len(parsed)} temperature sub-markets successfully parsed")
@@ -295,73 +302,118 @@ def _title_to_slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
-# ── Threshold extraction from question text ───────────────────────────────────
+# ── Threshold / band extraction from question text ───────────────────────────
 
-def _extract_threshold(question: str) -> Optional[float]:
+def _parse_market_band(question: str) -> Optional[dict]:
     """
-    Extract the temperature threshold in °F from a market question.
+    Parse a temperature market question and return a band descriptor dict:
+        {
+          "band_type":    "above" | "below" | "between",
+          "threshold_lo": float | None,   # lower bound (°F)
+          "threshold_hi": float | None,   # upper bound (°F)
+          "threshold_f":  float,          # midpoint (°F) — for display
+        }
 
-    Handles:
-      - Single value °F:  "75°F"  → 75.0
-      - Band °F:          "80-81°F" or "80–81°F" → midpoint 80.5
-      - Single value °C:  "25°C"  → 77.0
-      - Band °C:          "24-25°C" → midpoint converted to °F
-      - Bare number:      "above 90 degrees" → 90.0
+    Returns None if no temperature figure can be extracted.
 
-    Bug fix: use (?<!\d) lookbehind before optional minus so that the dash in
-    "52-53°F" is NOT treated as a negative sign (was producing -53°F).
+    Handles °F bands ("80-81°F"), single °F ("above 75°F"), °C bands,
+    single °C, and bare-number with direction keyword.
     """
     unit_f = r"(?:°\s*[Ff]|degrees?\s*(?:fahrenheit|[Ff])\b)"
     unit_c = r"(?:°\s*[Cc]|degrees?\s*celsius)"
-    num    = r"\d+(?:\.\d+)?"   # non-negative number
-    dash   = r"\s*[-–]\s*"      # hyphen or en-dash range separator
+    num    = r"\d+(?:\.\d+)?"
+    dash   = r"\s*[-–]\s*"
 
-    # ── Band °F: "80-81°F" ────────────────────────────────────────────────────
-    m = re.search(rf"({num}){dash}({num})\s*{unit_f}", question, re.IGNORECASE)
+    def _valid(v: float) -> bool:
+        return -60 <= v <= 140
+
+    def _c2f(c: float) -> float:
+        return c * 9 / 5 + 32
+
+    q = question  # shorthand
+
+    # ── Band °F: "80-81°F" or "between 80 and 81°F" ──────────────────────────
+    m = re.search(rf"({num}){dash}({num})\s*{unit_f}", q, re.IGNORECASE)
     if m:
         lo, hi = float(m.group(1)), float(m.group(2))
-        val = (lo + hi) / 2
-        logger.debug(f"  Threshold (°F band {lo}-{hi}): midpoint={val}")
-        if -60 <= val <= 140:
-            return val
+        mid = (lo + hi) / 2
+        if _valid(mid):
+            logger.debug(f"  Band °F between {lo}-{hi}: mid={mid}")
+            return {"band_type": "between", "threshold_lo": lo,
+                    "threshold_hi": hi, "threshold_f": mid}
 
-    # ── Single °F: use lookbehind so dash in a band can't be a minus sign ─────
-    m = re.search(rf"(?<!\d)(-?{num})\s*{unit_f}", question, re.IGNORECASE)
+    # ── Band °C: "24-25°C" ────────────────────────────────────────────────────
+    m = re.search(rf"({num}){dash}({num})\s*{unit_c}", q, re.IGNORECASE)
+    if m:
+        lo, hi = _c2f(float(m.group(1))), _c2f(float(m.group(2)))
+        mid = (lo + hi) / 2
+        if _valid(mid):
+            logger.debug(f"  Band °C→°F between {lo:.1f}-{hi:.1f}: mid={mid:.1f}")
+            return {"band_type": "between", "threshold_lo": lo,
+                    "threshold_hi": hi, "threshold_f": mid}
+
+    # ── Single °F with direction ──────────────────────────────────────────────
+    # "above/over/higher than/exceed X°F"  → above
+    # "below/under/not exceed X°F" / "X°F or below/lower/under" → below
+    # "X°F or above/higher/more" / "at least X°F" → above
+    m = re.search(rf"(?<!\d)(-?{num})\s*{unit_f}", q, re.IGNORECASE)
     if m:
         val = float(m.group(1))
-        logger.debug(f"  Threshold (°F single): {val}")
-        if -60 <= val <= 140:
-            return val
+        if _valid(val):
+            # Determine direction from surrounding words
+            q_lower = q.lower()
+            if re.search(r"\bor\s+(?:below|lower|under)\b|\b(?:below|under|not\s+exceed)\b",
+                         q_lower):
+                logger.debug(f"  Single °F below {val}")
+                return {"band_type": "below", "threshold_lo": None,
+                        "threshold_hi": val, "threshold_f": val}
+            elif re.search(r"\bor\s+(?:above|higher|more|over)\b|\b(?:above|over|exceed|higher\s+than|at\s+least)\b",
+                           q_lower):
+                logger.debug(f"  Single °F above {val}")
+                return {"band_type": "above", "threshold_lo": val,
+                        "threshold_hi": None, "threshold_f": val}
+            else:
+                # Default: treat bare single value as "above" (most common Polymarket phrasing)
+                logger.debug(f"  Single °F (no direction keyword) → defaulting to above {val}")
+                return {"band_type": "above", "threshold_lo": val,
+                        "threshold_hi": None, "threshold_f": val}
 
-    # ── Band °C: "24-25°C" → convert midpoint ─────────────────────────────────
-    m = re.search(rf"({num}){dash}({num})\s*{unit_c}", question, re.IGNORECASE)
+    # ── Single °C with direction ──────────────────────────────────────────────
+    m = re.search(rf"(?<!\d)(-?{num})\s*{unit_c}", q, re.IGNORECASE)
     if m:
-        lo, hi = float(m.group(1)), float(m.group(2))
-        val = ((lo + hi) / 2) * 9 / 5 + 32
-        logger.debug(f"  Threshold (°C band {lo}-{hi}→°F): {val:.1f}")
-        if -60 <= val <= 140:
-            return val
+        val = _c2f(float(m.group(1)))
+        if _valid(val):
+            q_lower = q.lower()
+            if re.search(r"\bor\s+(?:below|lower|under)\b|\b(?:below|under)\b", q_lower):
+                return {"band_type": "below", "threshold_lo": None,
+                        "threshold_hi": val, "threshold_f": val}
+            else:
+                return {"band_type": "above", "threshold_lo": val,
+                        "threshold_hi": None, "threshold_f": val}
 
-    # ── Single °C → convert ───────────────────────────────────────────────────
-    m = re.search(rf"(?<!\d)(-?{num})\s*{unit_c}", question, re.IGNORECASE)
-    if m:
-        val = float(m.group(1)) * 9 / 5 + 32
-        logger.debug(f"  Threshold (°C→°F): {val:.1f}")
-        if -60 <= val <= 140:
-            return val
+    # ── Bare number with direction keyword ────────────────────────────────────
+    m_above = re.search(rf"(?:above|exceed|over|higher\s+than)\s+({num})", q, re.IGNORECASE)
+    if m_above:
+        val = float(m_above.group(1))
+        if _valid(val):
+            return {"band_type": "above", "threshold_lo": val,
+                    "threshold_hi": None, "threshold_f": val}
 
-    # ── Bare number next to direction keyword ─────────────────────────────────
-    m = re.search(
-        rf"(?:above|below|exceed|reach|than|over|under)\s+(-?{num})",
-        question, re.IGNORECASE,
-    )
-    if m:
-        val = float(m.group(1))
-        logger.debug(f"  Threshold (bare number): {val}")
-        if -60 <= val <= 140:
-            return val
+    m_below = re.search(rf"(?:below|under|not\s+exceed)\s+({num})", q, re.IGNORECASE)
+    if m_below:
+        val = float(m_below.group(1))
+        if _valid(val):
+            return {"band_type": "below", "threshold_lo": None,
+                    "threshold_hi": val, "threshold_f": val}
 
+    logger.debug(f"  _parse_market_band: no temperature found in: {q[:100]!r}")
     return None
+
+
+def _extract_threshold(question: str) -> Optional[float]:
+    """Backward-compat shim — returns midpoint only. Use _parse_market_band for full info."""
+    band = _parse_market_band(question)
+    return band["threshold_f"] if band else None
 
 
 # ── YES price extraction ──────────────────────────────────────────────────────
