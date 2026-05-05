@@ -387,4 +387,45 @@ def _extract_yes_price(market: dict) -> Optional[float]:
                 if price > 1.0:
                     price /= 100.0
                 if 0.0 <= price <= 1.0:
-                    logger.debug
+                    logger.debug(f"  YES price from '{field}': {price:.4f}")
+                    return price
+            except (ValueError, TypeError):
+                pass
+
+    # tokens / outcomes array
+    for arr_field in ("tokens", "outcomes"):
+        tokens = market.get(arr_field) or []
+        if not isinstance(tokens, list):
+            continue
+        for token in tokens:
+            if not isinstance(token, dict):
+                continue
+            outcome_name = (token.get("outcome") or token.get("name") or "").lower()
+            if "yes" in outcome_name or outcome_name == "y":
+                for pf in ("price", "lastPrice", "last_price", "midPrice"):
+                    p = token.get(pf)
+                    if p is not None:
+                        try:
+                            price = float(p)
+                            price = price / 100.0 if price > 1.0 else price
+                            if 0.0 <= price <= 1.0:
+                                logger.debug(f"  YES price from {arr_field}[].{pf}: {price:.4f}")
+                                return price
+                        except (ValueError, TypeError):
+                            pass
+
+    # Single scalar price field
+    for field in ("price", "lastPrice", "last_price", "bestBid", "best_bid", "midPrice"):
+        val = market.get(field)
+        if val is not None:
+            try:
+                price = float(val)
+                price = price / 100.0 if price > 1.0 else price
+                if 0.0 <= price <= 1.0:
+                    logger.debug(f"  YES price from '{field}': {price:.4f}")
+                    return price
+            except (ValueError, TypeError):
+                pass
+
+    logger.debug(f"  YES price: no valid field found. Market keys={list(market.keys())}")
+    return None

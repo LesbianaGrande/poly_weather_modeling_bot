@@ -302,4 +302,16 @@ def check_resolutions() -> int:
                 f"Our direction={pos['direction']} → exit_price={exit_price}"
             )
         elif yes_price <= (1.0 - RESOLUTION_THRESHOLD):
-    
+            # NO resolved
+            exit_price = 0.0 if pos["direction"] == "yes" else 1.0
+            logger.info(
+                f"  Market {market_id[:30]} → NO resolved. "
+                f"Our direction={pos['direction']} → exit_price={exit_price}"
+            )
+
+        if exit_price is not None:
+            closed = pt.close_position(market_id, exit_price)
+            closed_count += len(closed)
+
+    logger.info(f"check_resolutions done | {closed_count} positions closed")
+    return closed_count

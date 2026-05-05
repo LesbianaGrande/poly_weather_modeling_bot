@@ -243,4 +243,30 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-       
+            except Exception as exc:
+                logger.error(f"Status page error: {exc}", exc_info=True)
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(b"Internal error")
+        elif self.path == "/health":
+            body = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, fmt, *args):
+        # Route access logs through our logger at DEBUG level
+        logger.debug(f"HTTP {fmt % args}")
+
+
+def start_server() -> None:
+    """Start the status HTTP server in a daemon thread."""
+    httpd = ThreadingHTTPServer(("0.0.0.0", PORT), _Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    logger.info(f"Status dashboard running on http://0.0.0.0:{PORT}")
