@@ -315,4 +315,53 @@ def get_summary() -> dict:
     pnls = [r["pnl"] for r in all_closed if r["pnl"] is not None]
     total_pnl = sum(pnls)
     n_closed = len(pnls)
-    wins = sum(1 for p in pn
+    wins = sum(1 for p in pnls if p > 0)
+    win_rate = wins / n_closed if n_closed else 0.0
+
+    summary = {
+        "bankroll": bankroll,
+        "starting_bankroll": config.STARTING_BANKROLL,
+        "total_pnl": total_pnl,
+        "return_pct": (bankroll - config.STARTING_BANKROLL) / config.STARTING_BANKROLL * 100,
+        "n_open": n_open,
+        "n_closed": n_closed,
+        "win_rate": win_rate,
+        "wins": wins,
+        "losses": n_closed - wins,
+    }
+    logger.info(
+        f"Summary | bankroll=${bankroll:.2f} ({summary['return_pct']:+.1f}%) "
+        f"PnL=${total_pnl:+.2f} open={n_open} closed={n_closed} "
+        f"win_rate={win_rate:.1%}"
+    )
+    return summary
+
+
+def print_summary_table() -> None:
+    """Log a formatted summary table for easy reading in logs."""
+    s = get_summary()
+    lines = [
+        "=" * 60,
+        "  PAPER TRADING SUMMARY",
+        "=" * 60,
+        f"  Bankroll:       ${s['bankroll']:.2f}  ({s['return_pct']:+.1f}% vs start)",
+        f"  Total PnL:      ${s['total_pnl']:+.2f}",
+        f"  Open positions: {s['n_open']}",
+        f"  Closed:         {s['n_closed']}  (W:{s['wins']} / L:{s['losses']})  win_rate={s['win_rate']:.1%}",
+        "=" * 60,
+    ]
+    for line in lines:
+        logger.info(line)
+
+    # Also log open positions
+    open_pos = get_open_positions()
+    if open_pos:
+        logger.info("  OPEN POSITIONS:")
+        for p in open_pos:
+            logger.info(
+                f"    [{p['id']}] {p['city']} {p['kind'].upper()} "
+                f"{p['direction'].upper()} @ {p['entry_price']:.3f} "
+                f"${p['dollar_amount']:.2f}  target={p['target_date']}"
+            )
+    else:
+        logger.info("  No open positions.")
