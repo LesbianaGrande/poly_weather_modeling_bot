@@ -86,10 +86,10 @@ def fetch_temperature_markets() -> list[dict]:
         city_raw = slug_info["city_raw"]
         target_date = slug_info["target_date"]
 
-        logger.debug(f"  slug_info: kind={kind} city='{city_raw}' date={target_date}")
+        logger.info(f"  EVENT slug='{slug}' → kind={kind} city='{city_raw}' date={target_date}")
 
         if target_date < date.today():
-            logger.debug(f"  Skipping — target_date {target_date} is in the past")
+            logger.info(f"  SKIP past event: slug='{slug}' target_date={target_date}")
             continue
 
         # Extract sub-markets from the event
@@ -107,7 +107,8 @@ def fetch_temperature_markets() -> list[dict]:
             seen_market_ids.add(market_id)
 
             question = mkt.get("question") or mkt.get("title") or ""
-            logger.debug(f"  Sub-market id={market_id[:20]}... question='{question[:100]}'")
+            raw_prices = mkt.get("outcomePrices") or mkt.get("outcome_prices") or mkt.get("prices")
+            logger.info(f"  SUB-MARKET id={market_id[:24]} question='{question[:120]}' raw_prices={raw_prices!r}")
 
             # Extract threshold from the question
             threshold_f = _extract_threshold(question)
@@ -131,7 +132,10 @@ def fetch_temperature_markets() -> list[dict]:
                 "yes_price": yes_price,
                 "no_price": round(1.0 - yes_price, 4),
             }
-            logger.debug(f"    Parsed OK: {result}")
+            logger.info(
+                f"  ACCEPTED: {city_raw} {kind} thr={threshold_f}°F "
+                f"target={target_date} yes_price={yes_price:.4f} "
+                f"question='{question[:80]}'")
             parsed.append(result)
 
     logger.info(f"Polymarket: {len(parsed)} temperature sub-markets successfully parsed")
