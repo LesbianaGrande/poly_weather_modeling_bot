@@ -175,6 +175,15 @@ def _evaluate_market(mkt: dict) -> str:
     dist = distribution_summary(blended)
     logger.info(f"  Blended distribution: {dist}")
 
+    # Compute blended mean (our predicted temperature)
+    blended_mean = sum(blended) / len(blended) if blended else None
+    if blended_mean is not None:
+        offset = blended_mean - threshold_f
+        logger.info(
+            f"  Prediction: {blended_mean:.1f}°F vs threshold {threshold_f}°F "
+            f"(offset={offset:+.1f}°F)"
+        )
+
     # --- Probability ---
     our_prob = compute_probability(blended, threshold_f, kind)
     market_prob = yes_price  # YES price IS the market's implied probability
@@ -203,6 +212,11 @@ def _evaluate_market(mkt: dict) -> str:
         n_clim=len(clim_samples),
         mos_correction=mos_correction,
         notes=kelly["reason"],
+        city=city_name,
+        kind=kind,
+        threshold_f=threshold_f,
+        target_date=target_date.isoformat(),
+        blended_mean=blended_mean,
     )
 
     # --- Open position ---
@@ -288,16 +302,4 @@ def check_resolutions() -> int:
                 f"Our direction={pos['direction']} → exit_price={exit_price}"
             )
         elif yes_price <= (1.0 - RESOLUTION_THRESHOLD):
-            # NO resolved
-            exit_price = 0.0 if pos["direction"] == "yes" else 1.0
-            logger.info(
-                f"  Market {market_id[:30]} → NO resolved. "
-                f"Our direction={pos['direction']} → exit_price={exit_price}"
-            )
-
-        if exit_price is not None:
-            closed = pt.close_position(market_id, exit_price)
-            closed_count += len(closed)
-
-    logger.info(f"check_resolutions done | {closed_count} positions closed")
-    return closed_count
+    

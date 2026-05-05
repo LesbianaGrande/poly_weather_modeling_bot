@@ -63,13 +63,18 @@ def init_db() -> None:
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 market_id       TEXT NOT NULL,
                 run_time        TEXT NOT NULL,
+                city            TEXT,
+                kind            TEXT,           -- 'high' or 'low'
+                threshold_f     REAL,           -- market threshold in °F
+                target_date     TEXT,
                 lead_days       INTEGER,
-                our_prob        REAL,
-                market_prob     REAL,
+                blended_mean    REAL,           -- our predicted temperature (°F)
+                our_prob        REAL,           -- our model probability
+                market_prob     REAL,           -- market implied probability
                 edge            REAL,
                 kelly_fraction  REAL,
                 dollar_amount   REAL,
-                action_taken    TEXT,   -- 'yes', 'no', 'pass'
+                action_taken    TEXT,           -- 'yes', 'no', 'pass'
                 n_ensemble      INTEGER,
                 n_clim          INTEGER,
                 mos_correction  REAL,
@@ -81,8 +86,29 @@ def init_db() -> None:
                 value   TEXT NOT NULL
             );
         """)
+
+    # Migrate existing DBs: add new columns if they don't exist yet
+    _migrate_model_runs_columns()
     logger.info("DB initialised OK")
     _ensure_bankroll()
+
+
+def _migrate_model_runs_columns() -> None:
+    """Add columns introduced in v2 to model_runs if this is an existing DB."""
+    new_cols = [
+        ("city",         "TEXT"),
+        ("kind",         "TEXT"),
+        ("threshold_f",  "REAL"),
+        ("target_date",  "TEXT"),
+        ("blended_mean", "REAL"),
+    ]
+    with _conn() as con:
+        existing = {row[1] for row in con.execute("PRAGMA table_info(model_runs)").fetchall()}
+        for col_name, col_type in new_cols:
+            if col_name not in existing:
+                con.execute(f"ALTER TABLE model_runs ADD COLUMN {col_name} {col_type}")
+                logger.info(f"  Migrated model_runs: added column '{col_name}'")
+
 
 
 def _ensure_bankroll() -> None:
@@ -243,22 +269,33 @@ def log_model_run(
     n_clim: int = 0,
     mos_correction: float | None = None,
     notes: str = "",
+    city: str = "",
+    kind: str = "",
+    threshold_f: float | None = None,
+    target_date: str = "",
+    blended_mean: float | None = None,
 ) -> None:
     now = datetime.now(tz=timezone.utc).isoformat()
     with _conn() as con:
         con.execute(
             """INSERT INTO model_runs
-               (market_id, run_time, lead_days, our_prob, market_prob, edge,
+               (market_id, run_time, city, kind, threshold_f, target_date,
+                lead_days, blended_mean, our_prob, market_prob, edge,
                 kelly_fraction, dollar_amount, action_taken, n_ensemble, n_clim,
                 mos_correction, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                market_id, now, lead_days, our_prob, market_prob, edge,
+                market_id, now, city, kind, threshold_f, target_date,
+                lead_days, blended_mean, our_prob, market_prob, edge,
                 kelly_fraction, dollar_amount, action_taken,
                 n_ensemble, n_clim, mos_correction, notes,
             ),
         )
     logger.debug(
+        f"log_model_run | {city} {kind} thr={threshold_f}°F "
+        f"pred={blended_mean:.1f}°F action={action_taken} "
+        f"our={our_prob:.4f} mkt={market_prob:.4f} edge={edge:+.4f}"
+        if blended_mean else
         f"log_model_run | market={market_id[:30]} action={action_taken} "
         f"our={our_prob:.4f} mkt={market_prob:.4f} edge={edge:+.4f}"
     )
@@ -278,53 +315,4 @@ def get_summary() -> dict:
     pnls = [r["pnl"] for r in all_closed if r["pnl"] is not None]
     total_pnl = sum(pnls)
     n_closed = len(pnls)
-    wins = sum(1 for p in pnls if p > 0)
-    win_rate = wins / n_closed if n_closed else 0.0
-
-    summary = {
-        "bankroll": bankroll,
-        "starting_bankroll": config.STARTING_BANKROLL,
-        "total_pnl": total_pnl,
-        "return_pct": (bankroll - config.STARTING_BANKROLL) / config.STARTING_BANKROLL * 100,
-        "n_open": n_open,
-        "n_closed": n_closed,
-        "win_rate": win_rate,
-        "wins": wins,
-        "losses": n_closed - wins,
-    }
-    logger.info(
-        f"Summary | bankroll=${bankroll:.2f} ({summary['return_pct']:+.1f}%) "
-        f"PnL=${total_pnl:+.2f} open={n_open} closed={n_closed} "
-        f"win_rate={win_rate:.1%}"
-    )
-    return summary
-
-
-def print_summary_table() -> None:
-    """Log a formatted summary table for easy reading in logs."""
-    s = get_summary()
-    lines = [
-        "=" * 60,
-        "  PAPER TRADING SUMMARY",
-        "=" * 60,
-        f"  Bankroll:       ${s['bankroll']:.2f}  ({s['return_pct']:+.1f}% vs start)",
-        f"  Total PnL:      ${s['total_pnl']:+.2f}",
-        f"  Open positions: {s['n_open']}",
-        f"  Closed:         {s['n_closed']}  (W:{s['wins']} / L:{s['losses']})  win_rate={s['win_rate']:.1%}",
-        "=" * 60,
-    ]
-    for line in lines:
-        logger.info(line)
-
-    # Also log open positions
-    open_pos = get_open_positions()
-    if open_pos:
-        logger.info("  OPEN POSITIONS:")
-        for p in open_pos:
-            logger.info(
-                f"    [{p['id']}] {p['city']} {p['kind'].upper()} "
-                f"{p['direction'].upper()} @ {p['entry_price']:.3f} "
-                f"${p['dollar_amount']:.2f}  target={p['target_date']}"
-            )
-    else:
-        logger.info("  No open positions.")
+    wins = sum(1 for p in pn

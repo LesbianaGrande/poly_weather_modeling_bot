@@ -299,33 +299,59 @@ def _title_to_slug(title: str) -> str:
 def _extract_threshold(question: str) -> Optional[float]:
     """
     Extract the temperature threshold in °F from a market question.
-    Handles °F, °C (converts), and bare numbers near temperature keywords.
+
+    Handles:
+      - Single value °F:  "75°F"  → 75.0
+      - Band °F:          "80-81°F" or "80–81°F" → midpoint 80.5
+      - Single value °C:  "25°C"  → 77.0
+      - Band °C:          "24-25°C" → midpoint converted to °F
+      - Bare number:      "above 90 degrees" → 90.0
+
+    Bug fix: use (?<!\d) lookbehind before optional minus so that the dash in
+    "52-53°F" is NOT treated as a negative sign (was producing -53°F).
     """
-    # °F explicit
-    m = re.search(
-        r"(-?\d+(?:\.\d+)?)\s*(?:°\s*[Ff]|degrees?\s*(?:fahrenheit|[Ff])\b)",
-        question, re.IGNORECASE,
-    )
+    unit_f = r"(?:°\s*[Ff]|degrees?\s*(?:fahrenheit|[Ff])\b)"
+    unit_c = r"(?:°\s*[Cc]|degrees?\s*celsius)"
+    num    = r"\d+(?:\.\d+)?"   # non-negative number
+    dash   = r"\s*[-–]\s*"      # hyphen or en-dash range separator
+
+    # ── Band °F: "80-81°F" ────────────────────────────────────────────────────
+    m = re.search(rf"({num}){dash}({num})\s*{unit_f}", question, re.IGNORECASE)
     if m:
-        val = float(m.group(1))
-        logger.debug(f"  Threshold (°F): {val}")
+        lo, hi = float(m.group(1)), float(m.group(2))
+        val = (lo + hi) / 2
+        logger.debug(f"  Threshold (°F band {lo}-{hi}): midpoint={val}")
         if -60 <= val <= 140:
             return val
 
-    # °C explicit → convert
-    m = re.search(
-        r"(-?\d+(?:\.\d+)?)\s*(?:°\s*[Cc]|degrees?\s*celsius)",
-        question, re.IGNORECASE,
-    )
+    # ── Single °F: use lookbehind so dash in a band can't be a minus sign ─────
+    m = re.search(rf"(?<!\d)(-?{num})\s*{unit_f}", question, re.IGNORECASE)
+    if m:
+        val = float(m.group(1))
+        logger.debug(f"  Threshold (°F single): {val}")
+        if -60 <= val <= 140:
+            return val
+
+    # ── Band °C: "24-25°C" → convert midpoint ─────────────────────────────────
+    m = re.search(rf"({num}){dash}({num})\s*{unit_c}", question, re.IGNORECASE)
+    if m:
+        lo, hi = float(m.group(1)), float(m.group(2))
+        val = ((lo + hi) / 2) * 9 / 5 + 32
+        logger.debug(f"  Threshold (°C band {lo}-{hi}→°F): {val:.1f}")
+        if -60 <= val <= 140:
+            return val
+
+    # ── Single °C → convert ───────────────────────────────────────────────────
+    m = re.search(rf"(?<!\d)(-?{num})\s*{unit_c}", question, re.IGNORECASE)
     if m:
         val = float(m.group(1)) * 9 / 5 + 32
         logger.debug(f"  Threshold (°C→°F): {val:.1f}")
         if -60 <= val <= 140:
             return val
 
-    # Bare number adjacent to "above", "below", "exceed", "reach", "than"
+    # ── Bare number next to direction keyword ─────────────────────────────────
     m = re.search(
-        r"(?:above|below|exceed|reach|than|over|under)\s+(-?\d+(?:\.\d+)?)",
+        rf"(?:above|below|exceed|reach|than|over|under)\s+(-?{num})",
         question, re.IGNORECASE,
     )
     if m:
@@ -361,45 +387,4 @@ def _extract_yes_price(market: dict) -> Optional[float]:
                 if price > 1.0:
                     price /= 100.0
                 if 0.0 <= price <= 1.0:
-                    logger.debug(f"  YES price from '{field}': {price:.4f}")
-                    return price
-            except (ValueError, TypeError):
-                pass
-
-    # tokens / outcomes array
-    for arr_field in ("tokens", "outcomes"):
-        tokens = market.get(arr_field) or []
-        if not isinstance(tokens, list):
-            continue
-        for token in tokens:
-            if not isinstance(token, dict):
-                continue
-            outcome_name = (token.get("outcome") or token.get("name") or "").lower()
-            if "yes" in outcome_name or outcome_name == "y":
-                for pf in ("price", "lastPrice", "last_price", "midPrice"):
-                    p = token.get(pf)
-                    if p is not None:
-                        try:
-                            price = float(p)
-                            price = price / 100.0 if price > 1.0 else price
-                            if 0.0 <= price <= 1.0:
-                                logger.debug(f"  YES price from {arr_field}[].{pf}: {price:.4f}")
-                                return price
-                        except (ValueError, TypeError):
-                            pass
-
-    # Single scalar price field
-    for field in ("price", "lastPrice", "last_price", "bestBid", "best_bid", "midPrice"):
-        val = market.get(field)
-        if val is not None:
-            try:
-                price = float(val)
-                price = price / 100.0 if price > 1.0 else price
-                if 0.0 <= price <= 1.0:
-                    logger.debug(f"  YES price from '{field}': {price:.4f}")
-                    return price
-            except (ValueError, TypeError):
-                pass
-
-    logger.debug(f"  YES price: no valid field found. Market keys={list(market.keys())}")
-    return None
+                    logger.debug

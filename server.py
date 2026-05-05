@@ -118,11 +118,37 @@ def _render_html(s: dict) -> str:
             "no": '<span style="color:#dc2626;font-weight:bold">BUY NO</span>',
             "pass": '<span style="color:#6b7280">PASS</span>',
         }.get(action, action)
+
+        # Prediction vs threshold display
+        blended_mean = r.get("blended_mean")
+        threshold_f = r.get("threshold_f")
+        if blended_mean is not None and threshold_f is not None:
+            offset = blended_mean - threshold_f
+            pred_str = f"{blended_mean:.1f}°F"
+            thr_str = f"{threshold_f:.1f}°F"
+            offset_color = "#16a34a" if abs(offset) < 3 else ("#dc2626" if abs(offset) > 10 else "#d97706")
+            offset_str = f'<span style="color:{offset_color};font-weight:bold">{offset:+.1f}°F</span>'
+        else:
+            pred_str = "—"
+            thr_str = f"{threshold_f:.1f}°F" if threshold_f is not None else "—"
+            offset_str = "—"
+
+        mos = r.get("mos_correction")
+        mos_str = f"{mos:+.1f}°F" if mos is not None else "—"
+
+        city = r.get("city") or "?"
+        kind = (r.get("kind") or "?").upper()
+
         run_rows += f"""
         <tr>
           <td>{r.get('run_time','?')[:16]}</td>
-          <td style="font-size:0.75em;max-width:260px;overflow:hidden">{r.get('market_id','?')[:32]}...</td>
+          <td>{city} {kind}</td>
+          <td>{r.get('target_date','?')}</td>
           <td>{r.get('lead_days','?')}d</td>
+          <td>{pred_str}</td>
+          <td>{thr_str}</td>
+          <td>{offset_str}</td>
+          <td>{mos_str}</td>
           <td>{r.get('our_prob',0):.3f}</td>
           <td>{r.get('market_prob',0):.3f}</td>
           <td>{r.get('edge',0):+.3f}</td>
@@ -200,7 +226,7 @@ def _render_html(s: dict) -> str:
 
   <section>
     <h2>Recent Model Runs (last 30)</h2>
-    {'<table><thead><tr><th>Time</th><th>Market ID</th><th>Lead</th><th>Our P</th><th>Mkt P</th><th>Edge</th><th>Size</th><th>Action</th></tr></thead><tbody>' + run_rows + '</tbody></table>' if s['recent_runs'] else '<div class="empty">No model runs yet.</div>'}
+    {'<table><thead><tr><th>Time</th><th>City / Kind</th><th>Target</th><th>Lead</th><th>Pred Temp</th><th>Threshold</th><th>Offset</th><th>MOS Corr</th><th>Our P</th><th>Mkt P</th><th>Edge</th><th>Size</th><th>Action</th></tr></thead><tbody>' + run_rows + '</tbody></table>' if s['recent_runs'] else '<div class="empty">No model runs yet.</div>'}
   </section>
 </body>
 </html>"""
@@ -217,30 +243,4 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            except Exception as exc:
-                logger.error(f"Status page error: {exc}", exc_info=True)
-                self.send_response(500)
-                self.end_headers()
-                self.wfile.write(b"Internal error")
-        elif self.path == "/health":
-            body = b'{"status":"ok"}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, fmt, *args):
-        # Route access logs through our logger at DEBUG level
-        logger.debug(f"HTTP {fmt % args}")
-
-
-def start_server() -> None:
-    """Start the status HTTP server in a daemon thread."""
-    httpd = ThreadingHTTPServer(("0.0.0.0", PORT), _Handler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    logger.info(f"Status dashboard running on http://0.0.0.0:{PORT}")
+       
