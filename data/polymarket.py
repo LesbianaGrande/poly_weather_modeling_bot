@@ -152,12 +152,9 @@ def _fetch_temperature_events(session: requests.Session) -> list[dict]:
     events: list[dict] = []
     seen_ids: set[str] = set()
 
-    # Strategy 1: tag_slug=weather with pagination
+    # tag_slug=weather is the only reliable filter — the search param is ignored
+    # by the API and returns all events regardless of query.
     _fetch_events_paginated(session, {"tag_slug": "weather"}, events, seen_ids)
-
-    # Strategy 2: search by keyword (some API versions support this)
-    for keyword in ("highest temperature", "lowest temperature"):
-        _fetch_events_paginated(session, {"search": keyword}, events, seen_ids)
 
     # Filter client-side to temperature events only
     temp_events = [
