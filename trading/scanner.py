@@ -112,6 +112,7 @@ def _evaluate_market(mkt: dict) -> str:
     city_name = city_info["display_name"]
     lat, lon = city_info["lat"], city_info["lon"]
     mos_station = city_info["mos_station"]
+    tz = city_info.get("timezone", "America/New_York")
     lead_days = (target_date - date.today()).days
 
     logger.info(f"  City={city_name} ({lat},{lon}) station={mos_station} lead={lead_days}d")
@@ -128,7 +129,7 @@ def _evaluate_market(mkt: dict) -> str:
     # --- Ensemble forecast ---
     logger.info(f"  Fetching ensemble forecast...")
     try:
-        ensemble_members = fetch_ensemble_members(lat, lon, target_date, kind=kind)
+        ensemble_members = fetch_ensemble_members(lat, lon, target_date, kind=kind, timezone=tz)
     except Exception as exc:
         logger.error(f"  Ensemble fetch failed: {exc}", exc_info=True)
         ensemble_members = []

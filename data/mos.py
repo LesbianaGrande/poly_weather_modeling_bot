@@ -83,7 +83,7 @@ def fetch_mos_prediction(
             continue
 
         text = resp.text
-        logger.debug(f"  MOS raw response (first 800 chars): {text[:800]!r}")
+        logger.info(f"  MOS raw response ({len(text)} chars):\n{text[:1500]}")
 
         if not text.strip() or "No data" in text or len(text.strip().splitlines()) < 2:
             logger.warning(f"  MOS: empty or no-data response for station={station} model={model}")
@@ -148,7 +148,9 @@ def _parse_mos_csv(text: str, target_date: date, station: str, model: str) -> di
         # Date may be "2026-05-10 12:00" or "2026051012" etc.
         row_date_iso = row_date_raw[:10].replace("/", "-")  # normalise
         if row_date_iso != target_str:
+            logger.debug(f"  skip row date={row_date_iso!r} (want {target_str!r})")
             continue
+        logger.info(f"  MOS MATCH row: {dict(zip(header, cols))}")
 
         # Extract max temp
         if max_col is not None and max_col < len(cols):

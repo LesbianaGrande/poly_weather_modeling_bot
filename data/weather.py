@@ -44,6 +44,7 @@ def fetch_ensemble_members(
     target_date: date,
     kind: Literal["high", "low"] = "high",
     models: list[str] = ENSEMBLE_MODELS,
+    timezone: str = "America/New_York",
 ) -> list[float]:
     """
     Fetch ensemble temperature forecasts and return a list of daily max (kind='high')
@@ -80,7 +81,7 @@ def fetch_ensemble_members(
             "temperature_unit": "fahrenheit",
             "wind_speed_unit": "mph",
             "forecast_days": forecast_days,
-            "timezone": "UTC",  # We'll aggregate by UTC day; close enough
+            "timezone": timezone,  # local calendar day slicing
         }
         logger.debug(f"  Open-Meteo request | model={model} URL={ENSEMBLE_URL} params={params}")
 
@@ -112,11 +113,12 @@ def fetch_ensemble_members(
                 logger.warning(f"  No temperature columns found for model={model}, skipping")
                 continue
 
-        # Filter time indices that fall on the target date (UTC date prefix)
-        target_str = target_date.isoformat()  # "2026-05-10"
+        # Filter hours for target_date. Timestamps are in the requested timezone,
+        # so a simple date-prefix match gives the correct local calendar day.
+        target_str = target_date.isoformat()
         target_indices = [i for i, t in enumerate(times) if t.startswith(target_str)]
-        logger.debug(
-            f"  model={model} target_date={target_str} matching time indices: {len(target_indices)}"
+        logger.info(
+            f"  model={model} target={target_str} (tz={timezone}): {len(target_indices)} hours matched"
         )
 
         if not target_indices:
