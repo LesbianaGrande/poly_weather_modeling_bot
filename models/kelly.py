@@ -61,24 +61,45 @@ def kelly_bet(
         "dollar_amount": 0.0,
     }
 
-    # ── Determine trade direction ──────────────────────────────────────────────
-    if edge >= config.MIN_EDGE:
+    # ── Relative edge (important for narrow-band markets) ────────────────────────────────────────────────────────────────────
+    # For 1-2°F bands, YES price can be 0.5-3% while our prob is 3-8%.
+    # Absolute edge stays small even with strong conviction, so also check
+    # whether our probability is >= REL_EDGE_MIN better than the market.
+    REL_EDGE_MIN = 0.25  # we must be at least 25% relatively better than the market
+
+    rel_edge_yes = (our_prob / market_prob - 1.0) if market_prob > 0 else 0.0
+    rel_edge_no  = ((1.0 - our_prob) / (1.0 - market_prob) - 1.0) if market_prob < 1.0 else 0.0
+
+    def _qualifies(abs_e: float, rel_e: float) -> bool:
+        return abs_e >= config.MIN_EDGE or rel_e >= REL_EDGE_MIN
+
+    # ── Determine trade direction ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    if edge > 0 and _qualifies(edge, rel_edge_yes):
         # Our probability is higher than market → buy YES
         action = "yes"
         p = our_prob          # P(YES resolves)
         q = market_prob       # cost per YES share
-    elif edge <= -config.MIN_EDGE:
+    elif edge < 0 and _qualifies(-edge, rel_edge_no):
         # Our probability is lower than market → buy NO
         action = "no"
         p = 1.0 - our_prob    # P(NO resolves)
         q = 1.0 - market_prob # cost per NO share
     else:
         logger.info(
-            f"kelly_bet PASS | edge={edge:+.4f} < MIN_EDGE={config.MIN_EDGE:.4f}, no trade"
+            f"kelly_bet PASS | abs_edge={edge:+.4f} "
+            f"rel_yes={rel_edge_yes:+.2f} rel_no={rel_edge_no:+.2f} "
+            f"MIN_EDGE={config.MIN_EDGE} REL_MIN={REL_EDGE_MIN}"
         )
-        return {**result_base, "action": "pass", "reason": f"Edge {edge:+.4f} below threshold {config.MIN_EDGE}"}
+        return {
+            **result_base,
+            "action": "pass",
+            "reason": (
+                f"Edge abs={edge:+.4f} rel_yes={rel_edge_yes:+.2f} rel_no={rel_edge_no:+.2f} "
+                f"below thresholds (abs>={config.MIN_EDGE} or rel>={REL_EDGE_MIN})"
+            ),
+        }
 
-    # ── Kelly formula ─────────────────────────────────────────────────────────
+    # ── Kelly formula ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
     # b = net odds: if you bet $1 on YES and win, you receive $1/q - 1 net
     if q <= 0 or q >= 1:
         logger.warning(f"kelly_bet | invalid q={q:.4f}, returning pass")
