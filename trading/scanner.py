@@ -31,7 +31,7 @@ from trading import paper_trader as pt
 
 logger = logging.getLogger(__name__)
 
-# A market is considered resolved if YES price is ≥ this (YES won) or ≤ (1 - this) (NO won)
+# A market is considered resolved if YES price is >= this (YES won) or <= (1 - this) (NO won)
 RESOLUTION_THRESHOLD = 0.95
 
 
@@ -115,10 +115,12 @@ def _evaluate_market(mkt: dict) -> str:
     city_name = city_info["display_name"]
     lat, lon = city_info["lat"], city_info["lon"]
     mos_station = city_info["mos_station"]
-    tz = city_info.get("timezone", "America/New_York")
     lead_days = (target_date - date.today()).days
 
-    logger.info(f"  City={city_name} ({lat},{lon}) station={mos_station} lead={lead_days}d")
+    logger.info(
+        f"  City={city_name} ({lat},{lon}) station={mos_station} lead={lead_days}d "
+        f"band={band_type} lo={threshold_lo} hi={threshold_hi} threshold={threshold_f}°F"
+    )
 
     if lead_days < 0:
         logger.info("  SKIP: target date already passed")
@@ -132,7 +134,7 @@ def _evaluate_market(mkt: dict) -> str:
     # --- Ensemble forecast ---
     logger.info(f"  Fetching ensemble forecast...")
     try:
-        ensemble_members = fetch_ensemble_members(lat, lon, target_date, kind=kind, timezone=tz)
+        ensemble_members = fetch_ensemble_members(lat, lon, target_date, kind=kind)
     except Exception as exc:
         logger.error(f"  Ensemble fetch failed: {exc}", exc_info=True)
         ensemble_members = []
@@ -258,7 +260,7 @@ def _evaluate_market(mkt: dict) -> str:
 def check_resolutions() -> int:
     """
     For all open positions, fetch current YES price from Polymarket.
-    If price is near 0 or 1 (≥ RESOLUTION_THRESHOLD), close the position.
+    If price is near 0 or 1 (>= RESOLUTION_THRESHOLD), close the position.
 
     Returns: number of positions closed.
     """
