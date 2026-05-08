@@ -1,12 +1,12 @@
 """
-trading/paper_trader.py — SQLite-backed paper trading engine.
+trading/paper_trader.py â SQLite-backed paper trading engine.
 
 Tracks virtual positions and running bankroll. No real money, no real orders.
 
 Tables:
-  positions   — every trade opened/closed
-  model_runs  — every model evaluation (even when no trade is taken)
-  settings    — key/value store (bankroll, etc.)
+  positions   â every trade opened/closed
+  model_runs  â every model evaluation (even when no trade is taken)
+  settings    â key/value store (bankroll, etc.)
 """
 
 import logging
@@ -65,10 +65,10 @@ def init_db() -> None:
                 run_time        TEXT NOT NULL,
                 city            TEXT,
                 kind            TEXT,           -- 'high' or 'low'
-                threshold_f     REAL,           -- market threshold in °F
+                threshold_f     REAL,           -- market threshold in Â°F
                 target_date     TEXT,
                 lead_days       INTEGER,
-                blended_mean    REAL,           -- our predicted temperature (°F)
+                blended_mean    REAL,           -- our predicted temperature (Â°F)
                 our_prob        REAL,           -- our model probability
                 market_prob     REAL,           -- market implied probability
                 edge            REAL,
@@ -112,10 +112,26 @@ def _migrate_model_runs_columns() -> None:
 
 
 def _ensure_bankroll() -> None:
-    """Set starting bankroll if not already present."""
+    """
+    Set bankroll on startup.
+
+    Priority:
+      1. FORCE_BANKROLL > 0 â always override DB with that value (use to reset)
+      2. DB has existing value â keep it
+      3. Neither â initialise from STARTING_BANKROLL
+    """
+    force = getattr(config, "FORCE_BANKROLL", 0.0)
     with _conn() as con:
         row = con.execute("SELECT value FROM settings WHERE key='bankroll'").fetchone()
-        if row is None:
+        if force > 0:
+            # Always override
+            con.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('bankroll', ?)",
+                (str(force),),
+            )
+            old = f"${float(row['value']):.2f}" if row else "none"
+            logger.info(f"Bankroll FORCED to ${force:.2f} (was {old})")
+        elif row is None:
             con.execute(
                 "INSERT INTO settings (key, value) VALUES ('bankroll', ?)",
                 (str(config.STARTING_BANKROLL),),
@@ -129,7 +145,7 @@ def get_bankroll() -> float:
     with _conn() as con:
         row = con.execute("SELECT value FROM settings WHERE key='bankroll'").fetchone()
         val = float(row["value"]) if row else config.STARTING_BANKROLL
-    logger.debug(f"get_bankroll → ${val:.2f}")
+    logger.debug(f"get_bankroll â ${val:.2f}")
     return val
 
 
@@ -139,7 +155,22 @@ def set_bankroll(amount: float) -> None:
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('bankroll', ?)",
             (str(amount),),
         )
-    logger.debug(f"set_bankroll → ${amount:.2f}")
+    logger.debug(f"set_bankroll â ${amount:.2f}")
+
+
+def count_same_trades(city: str, target_date_str: str, threshold_f: float) -> int:
+    """
+    Count all positions (open + closed) with the same city + target_date + threshold_f.
+    Used to enforce the MAX_SAME_TRADE_ALL_TIME cap.
+    """
+    with _conn() as con:
+        row = con.execute(
+            "SELECT COUNT(*) FROM positions WHERE city=? AND target_date=? AND threshold_f=?",
+            (city, target_date_str, threshold_f),
+        ).fetchone()
+    count = row[0] if row else 0
+    logger.debug(f"count_same_trades | {city} {target_date_str} {threshold_f}Â°F â {count}")
+    return count
 
 
 def open_position(
@@ -186,7 +217,7 @@ def open_position(
     logger.info(
         f"open_position | id={pos_id} market={market_id[:20]} {direction.upper()} "
         f"@ {entry_price:.3f} shares={shares:.2f} cost=${dollar_amount:.2f} "
-        f"bankroll: ${bankroll:.2f} → ${new_bankroll:.2f}"
+        f"bankroll: ${bankroll:.2f} â ${new_bankroll:.2f}"
     )
     return pos_id
 
@@ -231,7 +262,7 @@ def close_position(market_id: str, exit_price: float) -> list[dict]:
                 f"close_position | id={row['id']} market={market_id[:20]} "
                 f"{direction.upper()} exit_price={exit_price:.3f} "
                 f"proceeds=${proceeds:.2f} pnl=${pnl:+.2f} "
-                f"bankroll: ${bankroll:.2f} → ${new_bankroll:.2f}"
+                f"bankroll: ${bankroll:.2f} â ${new_bankroll:.2f}"
             )
 
     return closed
@@ -244,7 +275,7 @@ def position_exists(market_id: str) -> bool:
             "SELECT id FROM positions WHERE market_id=? AND status='open'", (market_id,)
         ).fetchone()
     exists = row is not None
-    logger.debug(f"position_exists | market={market_id[:30]} → {exists}")
+    logger.debug(f"position_exists | market={market_id[:30]} â {exists}")
     return exists
 
 
@@ -292,8 +323,8 @@ def log_model_run(
             ),
         )
     logger.debug(
-        f"log_model_run | {city} {kind} thr={threshold_f}°F "
-        f"pred={blended_mean:.1f}°F action={action_taken} "
+        f"log_model_run | {city} {kind} thr={threshold_f}Â°F "
+        f"pred={blended_mean:.1f}Â°F action={action_taken} "
         f"our={our_prob:.4f} mkt={market_prob:.4f} edge={edge:+.4f}"
         if blended_mean else
         f"log_model_run | market={market_id[:30]} action={action_taken} "
