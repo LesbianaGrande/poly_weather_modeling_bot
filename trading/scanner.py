@@ -1,16 +1,17 @@
 """
-trading/scanner.py — Main scan loop.
+trading/scanner.py â Main scan loop.
 
 On each run:
   1. Fetch all active temperature markets from Polymarket
   2. For each parsed market:
-       a. Resolve city → coordinates + MOS station
+       a. Resolve city â coordinates + MOS station
        b. Fetch ensemble forecast (Open-Meteo)
-       c. Fetch MOS bias correction (Iowa Mesonet)
+       c. Fetch MOS bias correction (Iowa Mesonet) â skipped for international cities
        d. Fetch climatological prior (Open-Meteo archive)
        e. Blend into a probability
-       f. Compare with market price → Kelly sizing
-       g. Open paper position if edge is sufficient and no existing position
+       f. Compare with market price â Kelly sizing
+       g. Open paper position if edge is sufficient and no existing position,
+          subject to per-city-per-scan and all-time same-trade caps
   3. Check existing open positions for resolution (price near 0 or 1)
   4. Print summary table
 """
@@ -37,7 +38,7 @@ RESOLUTION_THRESHOLD = 0.95
 
 def run_scan() -> None:
     """
-    Main scan: discover markets → model → decide → trade.
+    Main scan: discover markets â model â decide â trade.
     Safe to call repeatedly; catches per-market exceptions.
     """
     run_start = datetime.now(tz=timezone.utc)
@@ -58,9 +59,12 @@ def run_scan() -> None:
     trades_skipped = 0
     errors = 0
 
+    # Track how many trades have been opened per city this scan
+    city_trades_this_scan: dict[str, int] = {}
+
     for mkt in markets:
         try:
-            result = _evaluate_market(mkt)
+            result = _evaluate_market(mkt, city_trades_this_scan)
             if result == "opened":
                 trades_opened += 1
             elif result == "skipped":
@@ -83,9 +87,13 @@ def run_scan() -> None:
     pt.print_summary_table()
 
 
-def _evaluate_market(mkt: dict) -> str:
+def _evaluate_market(mkt: dict, city_trades_this_scan: dict) -> str:
     """
     Evaluate a single market and optionally open a paper position.
+
+    city_trades_this_scan: mutable dict {city_name: count} tracking how many
+    trades have been opened for each city in this scan. Modified in-place when
+    a trade is opened.
 
     Returns: 'opened', 'skipped', or 'passed'
     """
@@ -103,7 +111,7 @@ def _evaluate_market(mkt: dict) -> str:
     logger.info(f"--- Market: '{question[:100]}'")
     logger.debug(
         f"  id={market_id} city_raw='{city_raw}' kind={kind} "
-        f"threshold={threshold_f}°F target={target_date} yes_price={yes_price:.4f}"
+        f"threshold={threshold_f}Â°F target={target_date} yes_price={yes_price:.4f}"
     )
 
     # --- City lookup ---
@@ -114,12 +122,12 @@ def _evaluate_market(mkt: dict) -> str:
 
     city_name = city_info["display_name"]
     lat, lon = city_info["lat"], city_info["lon"]
-    mos_station = city_info["mos_station"]
+    mos_station = city_info.get("mos_station")  # None for international cities
     lead_days = (target_date - date.today()).days
 
     logger.info(
-        f"  City={city_name} ({lat},{lon}) station={mos_station} lead={lead_days}d "
-        f"band={band_type} lo={threshold_lo} hi={threshold_hi} threshold={threshold_f}°F"
+        f"  City={city_name} ({lat},{lon}) station={mos_station or 'N/A'} lead={lead_days}d "
+        f"band={band_type} lo={threshold_lo} hi={threshold_hi} threshold={threshold_f}Â°F"
     )
 
     if lead_days < 0:
@@ -129,6 +137,26 @@ def _evaluate_market(mkt: dict) -> str:
     # --- Skip if already have a position ---
     if pt.position_exists(market_id):
         logger.info(f"  SKIP: already have open position for market {market_id[:30]}")
+        return "skipped"
+
+    # --- Per-city scan limit (max 2 trades per city per scan) ---
+    city_count_this_scan = city_trades_this_scan.get(city_name, 0)
+    max_per_city = config.MAX_TRADES_PER_CITY_PER_SCAN
+    if city_count_this_scan >= max_per_city:
+        logger.info(
+            f"  SKIP: already {city_count_this_scan} trades for {city_name} "
+            f"this scan (max {max_per_city})"
+        )
+        return "skipped"
+
+    # --- All-time same-trade cap (max 5 identical city+date+threshold combos) ---
+    same_trade_count = pt.count_same_trades(city_name, target_date.isoformat(), threshold_f)
+    max_same = config.MAX_SAME_TRADE_ALL_TIME
+    if same_trade_count >= max_same:
+        logger.info(
+            f"  SKIP: {same_trade_count} existing positions for "
+            f"{city_name} {target_date} {threshold_f}Â°F (max {max_same})"
+        )
         return "skipped"
 
     # --- Ensemble forecast ---
@@ -141,26 +169,29 @@ def _evaluate_market(mkt: dict) -> str:
 
     logger.info(f"  Ensemble: {len(ensemble_members)} members")
 
-    # --- MOS bias correction ---
-    logger.info(f"  Fetching MOS for station={mos_station}...")
+    # --- MOS bias correction (US cities only; skip for international) ---
     mos_pred = None
     mos_correction = None
-    try:
-        mos_data = fetch_mos_prediction(mos_station, target_date)
-        if mos_data:
-            mos_pred = mos_data.get("high") if kind == "high" else mos_data.get("low")
-            if mos_pred is not None:
-                ens_mean = sum(ensemble_members) / len(ensemble_members) if ensemble_members else None
-                mos_correction = mos_pred - ens_mean if ens_mean is not None else None
-                logger.info(
-                    f"  MOS {kind}={mos_pred:.1f}°F | "
-                    f"ens_mean={ens_mean:.1f}°F | correction={mos_correction:+.1f}°F"
-                    if ens_mean is not None else f"  MOS {kind}={mos_pred:.1f}°F (no ens mean)"
-                )
-            else:
-                logger.info(f"  MOS data available but no '{kind}' field: {mos_data}")
-    except Exception as exc:
-        logger.warning(f"  MOS fetch failed (continuing without): {exc}", exc_info=True)
+    if mos_station is None:
+        logger.info(f"  MOS: no station configured for {city_name} (international city) â skipping")
+    else:
+        logger.info(f"  Fetching MOS for station={mos_station}...")
+        try:
+            mos_data = fetch_mos_prediction(mos_station, target_date)
+            if mos_data:
+                mos_pred = mos_data.get("high") if kind == "high" else mos_data.get("low")
+                if mos_pred is not None:
+                    ens_mean = sum(ensemble_members) / len(ensemble_members) if ensemble_members else None
+                    mos_correction = mos_pred - ens_mean if ens_mean is not None else None
+                    logger.info(
+                        f"  MOS {kind}={mos_pred:.1f}Â°F | "
+                        f"ens_mean={ens_mean:.1f}Â°F | correction={mos_correction:+.1f}Â°F"
+                        if ens_mean is not None else f"  MOS {kind}={mos_pred:.1f}Â°F (no ens mean)"
+                    )
+                else:
+                    logger.info(f"  MOS data available but no '{kind}' field: {mos_data}")
+        except Exception as exc:
+            logger.warning(f"  MOS fetch failed (continuing without): {exc}", exc_info=True)
 
     # --- Climatological prior ---
     logger.info(f"  Fetching climatology for ({lat},{lon})...")
@@ -186,8 +217,8 @@ def _evaluate_market(mkt: dict) -> str:
     if blended_mean is not None:
         offset = blended_mean - threshold_f
         logger.info(
-            f"  Prediction: {blended_mean:.1f}°F vs threshold {threshold_f}°F "
-            f"(offset={offset:+.1f}°F)"
+            f"  Prediction: {blended_mean:.1f}Â°F vs threshold {threshold_f}Â°F "
+            f"(offset={offset:+.1f}Â°F)"
         )
 
     # --- Probability ---
@@ -207,7 +238,7 @@ def _evaluate_market(mkt: dict) -> str:
     # --- Kelly sizing ---
     bankroll = pt.get_bankroll()
     kelly = kelly_bet(our_prob, market_prob, bankroll)
-    logger.info(f"  Kelly → {kelly['reason']}")
+    logger.info(f"  Kelly â {kelly['reason']}")
 
     # --- Log model run regardless of trade ---
     pt.log_model_run(
@@ -232,7 +263,7 @@ def _evaluate_market(mkt: dict) -> str:
 
     # --- Open position ---
     if kelly["action"] == "pass":
-        logger.info("  → PASS (no trade)")
+        logger.info("  â PASS (no trade)")
         return "passed"
 
     direction = kelly["action"]  # 'yes' or 'no'
@@ -249,10 +280,16 @@ def _evaluate_market(mkt: dict) -> str:
         entry_price=entry_price,
         dollar_amount=kelly["dollar_amount"],
     )
+
+    # Update per-city scan counter
+    city_trades_this_scan[city_name] = city_count_this_scan + 1
+
     logger.info(
-        f"  → TRADE OPENED id={pos_id} | {city_name} {kind.upper()} "
+        f"  â TRADE OPENED id={pos_id} | {city_name} {kind.upper()} "
         f"{direction.upper()} ${kelly['dollar_amount']:.2f} @ {entry_price:.4f} "
-        f"| target={target_date} threshold={threshold_f}°F"
+        f"| target={target_date} threshold={threshold_f}Â°F "
+        f"| city_trades_this_scan={city_trades_this_scan[city_name]}/{max_per_city} "
+        f"same_trade_total={same_trade_count+1}/{max_same}"
     )
     return "opened"
 
@@ -309,15 +346,15 @@ def check_resolutions() -> int:
             # YES resolved (market HIGH exceeded threshold, or LOW dropped below)
             exit_price = 1.0 if pos["direction"] == "yes" else 0.0
             logger.info(
-                f"  Market {market_id[:30]} → YES resolved. "
-                f"Our direction={pos['direction']} → exit_price={exit_price}"
+                f"  Market {market_id[:30]} â YES resolved. "
+                f"Our direction={pos['direction']} â exit_price={exit_price}"
             )
         elif yes_price <= (1.0 - RESOLUTION_THRESHOLD):
             # NO resolved
             exit_price = 0.0 if pos["direction"] == "yes" else 1.0
             logger.info(
-                f"  Market {market_id[:30]} → NO resolved. "
-                f"Our direction={pos['direction']} → exit_price={exit_price}"
+                f"  Market {market_id[:30]} â NO resolved. "
+                f"Our direction={pos['direction']} â exit_price={exit_price}"
             )
 
         if exit_price is not None:
