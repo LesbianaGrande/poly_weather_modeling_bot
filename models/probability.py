@@ -26,9 +26,9 @@ def compute_probability(
     Compute P(YES) for a temperature market.
 
     band_type controls the market structure:
-      "above"   — YES resolves if temp > threshold_lo  (e.g. "85°F or higher")
-      "below"   — YES resolves if temp < threshold_hi  (e.g. "53°F or below")
-      "between" — YES resolves if threshold_lo ≤ temp ≤ threshold_hi  (e.g. "80-81°F band")
+      "above"   — YES resolves if temp >= threshold_lo  (e.g. "85°F or higher")
+      "below"   — YES resolves if temp <= threshold_hi  (e.g. "53°F or below")
+      "between" — YES resolves if threshold_lo <= temp <= threshold_hi  (e.g. "80-81°F band")
 
     For 'high' markets, samples are daily-max temperatures.
     For 'low'  markets, samples are daily-min temperatures.
@@ -49,14 +49,14 @@ def compute_probability(
     hi = threshold_hi if threshold_hi is not None else threshold_f
 
     if band_type == "between":
-        # P(lo ≤ temp ≤ hi) — narrow band market
+        # P(lo <= temp <= hi) — narrow band market
         count = sum(1 for s in samples if lo <= s <= hi)
     elif band_type == "below":
-        # P(temp ≤ hi) — "X or below" market
+        # P(temp <= hi) — "X or below" market
         count = sum(1 for s in samples if s <= hi)
     else:
-        # "above" (default) — "X or higher" / "> X" market
-        count = sum(1 for s in samples if s > lo)
+        # "above" (default) — "X or higher" market: YES if temp >= threshold
+        count = sum(1 for s in samples if s >= lo)
 
     probability = count / n
 
